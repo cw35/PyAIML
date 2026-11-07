@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    # ready_for_review: a draft PR runs nothing; marking it ready runs CI on its head.
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [master]
+  # release.yml runs these same checks before it publishes.
+  workflow_call:
+
+permissions:
+  contents: read
+
+# The code is Python 2 (2011) and does not compile on Python 3. actions/setup-python no longer offers 2.7 on
+# ubuntu-latest, so every check runs in the official python:2.7.18-slim image with the checkout mounted read-only.
+env:
+  PY27: docker run --rm -v ${{ github.workspace }}:/src:ro -w /src python:2.7.18-slim
+
+jobs:
+  compile:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile every Python file under Python 2.7
+        run: |
+          $PY27 python -c '
+          import sys
+          files = sys.argv[1:]
+          for f in files:
+              compile(open(f).read(), f, "exec")
+          print("compiled %d files" % len(files))
+          ' $(git ls-files '*.py')
+
+  test:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # testToday, testTomorrow and testYesterday expect today to be 2011-05-12, so they cannot pass any more;
+      # the other eight cases of aiml/caltest.py run.
+      - name: Date tests (aiml/caltest.py)
+        run: |
+          $PY27 sh -c 'cd aiml && python -B -m unittest -v \
+            caltest.CalTest.testChineseformat caltest.CalTest.testBefore caltest.CalTest.testAfter \
+            caltest.CalTest.testWeekday caltest.CalTest.testmix caltest.CalTest.testDateofweekday \
+            caltest.CalTest.testchinese2num caltest.CalTest.testParsechinesedate'
+
+  smoke:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Load the AIML files main.py loads; learn() reports a parse error on stderr and goes on, so fail on that too.
+      # Nothing is sent to respond(): <system> templates execute Python.
+      - name: Load the bot's AIML files
+        run: |
+          $PY27 python -B -c '
+          from aiml.Kernel import k
+          for f in ["aisen/main.xml", "client.aiml"]:
+              k.learn(f)
+          n = k.numCategories()
+          print("categories: %d" % n)
+          assert n > 0
+          ' 2> stderr.txt || { cat stderr.txt; exit 1; }
+          cat stderr.txt
+          if grep -q "PARSE ERROR" stderr.txt; then exit 1; fi
