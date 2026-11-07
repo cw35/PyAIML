@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  # The same checks as CI, on the tagged commit.
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the tagged commit is on master
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/master; then
+            echo "::error::$GITHUB_REF_NAME ($GITHUB_SHA) is not on master"
+            exit 1
+          fi
+      # Not a packaged project (no setup.py): the release is the source tree at the tag.
+      - name: Archive the source and write checksums
+        run: |
+          mkdir dist
+          git archive --format=tar.gz --prefix="PyAIML-$GITHUB_REF_NAME/" -o "dist/PyAIML-$GITHUB_REF_NAME.tar.gz" "$GITHUB_SHA"
+          git archive --format=zip --prefix="PyAIML-$GITHUB_REF_NAME/" -o "dist/PyAIML-$GITHUB_REF_NAME.zip" "$GITHUB_SHA"
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
